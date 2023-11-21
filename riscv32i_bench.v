@@ -5,7 +5,7 @@ module riscv32i_bench();
     wire [31:0] INSTR;
     wire [31:0] PC;
 
-    SOC uut(
+    SOC #(.CLK_DIV(2))uut(
         .CLK(CLK),
         .RESET(RESET),
         .state_out(STATE),

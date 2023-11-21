@@ -50,20 +50,53 @@ module Memory (
   end
 endmodule
 
+module top (
+    input CLK,
+    input BTN1,
+    output LED1,
+    output LED2,
+    output LED3,
+    output LED4,
+    output LED5
+);
+  wire [2:0] state_out;
+  wire [31:0] instr_out;
+  wire [31:0] pc_out;
+  wire clk_out;
+
+  SOC #(.CLK_DIV(21))RiscV(
+    .CLK(CLK),
+    .RESET(BTN1),
+    .state_out(state_out),
+    .instr_out(instr_out),
+    .pc_out(pc_out),
+    .clk_out(clk_out)
+  );
+
+  assign LED1 = state_out[0];
+  assign LED2 = state_out[1];
+  assign LED3 = state_out[2];
+  assign LED4 = pc_out[2];
+  assign LED5 = clk_out;
+endmodule
+
 module SOC (
     input CLK,
     input RESET,
     output [2:0] state_out,
     output [31:0] instr_out,
-    output [31:0] pc_out
+    output [31:0] pc_out,
+    output clk_out
   );
+
+  parameter CLK_DIV = 2;
 
   // Main internal clock divider (and negative reset source)
   wire clk;
   wire resetn;
 
   Clockworks #(
-               .SLOW(2)
+               .SLOW(CLK_DIV)
              )CLOCK(
                .CLK(CLK),
                .RESET(RESET),
@@ -188,4 +221,5 @@ module SOC (
   assign pc_out = PC;
   assign state_out = state;
   assign instr_out = {rdId, 3'b111, rs1Id, rs1[7:0]};
+  assign clk_out = clk;
 endmodule
