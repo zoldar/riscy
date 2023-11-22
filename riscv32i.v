@@ -58,20 +58,20 @@ module top (
     output LED3,
     output LED4,
     output LED5
-);
+  );
   wire [2:0] state_out;
   wire [31:0] instr_out;
   wire [31:0] pc_out;
   wire clk_out;
 
   SOC #(.CLK_DIV(21))RiscV(
-    .CLK(CLK),
-    .RESET(BTN1),
-    .state_out(state_out),
-    .instr_out(instr_out),
-    .pc_out(pc_out),
-    .clk_out(clk_out)
-  );
+        .CLK(CLK),
+        .RESET(BTN1),
+        .state_out(state_out),
+        .instr_out(instr_out),
+        .pc_out(pc_out),
+        .clk_out(clk_out)
+      );
 
   assign LED1 = state_out[0];
   assign LED2 = state_out[1];
@@ -120,8 +120,6 @@ module SOC (
     registers[0] = 0;
   end
 
-  assign mem_addr = PC;
-
   Memory #(
            .MEMORY_SIZE_KB(8)
          )RAM(
@@ -161,61 +159,115 @@ module SOC (
   wire [31:0] Bimm = {{20{instr[31]}}, instr[7], instr[30:25], instr[11:8], 1'b0};
   wire [31:0] Uimm = {instr[31:12], 12'b0};
   wire [31:0] Jimm = {{12{instr[31]}}, instr[19:12], instr[20], instr[30:25], instr[24:21], 1'b0};
-   
+
+  wire [31:0] rs2ForALU = isALU ? rs2 : Iimm;
+  wire [31:0] rs2ShiftForALU = isALU ? rs2 : Iimm[0:4];
+
   // Main state machine
 
   localparam FETCH_INSTR = 0;
   localparam WAIT_INSTR = 1;
   localparam LOAD_REGS = 2;
-  localparam EXECUTE = 3;
+  localparam WAIT_LOAD_DATA = 3;
+  localparam EXECUTE = 4;
 
   reg [2:0] state = FETCH_INSTR;
 
-  always @(posedge clk)
+  assign mem_addr = (state == WAIT_LOAD_DATA) ? (rs1 + Iimm) : PC;
+
+  always @(posedge clk or negedge resetn)
   begin
     if (!resetn)
     begin
       PC <= 0;
       state <= FETCH_INSTR;
     end
-
-    case (state)
-      FETCH_INSTR:
-      begin
-        state <= WAIT_INSTR;
-      end
-      WAIT_INSTR:
-      begin
-        instr <= mem_rdata;
-        state <= LOAD_REGS;
-      end
-      LOAD_REGS:
-      begin
-        rs1 <= registers[rs1Id];
-        rs2 <= registers[rs2Id];
-        state <= EXECUTE;
-      end
-      EXECUTE:
-      begin
-        if (isALU)
+    else
+    begin
+      case (state)
+        FETCH_INSTR:
         begin
-            case (funct3)
-                0: registers[rdId] = funct7[5] ? rs1 - rs2 : rs1 + rs2;
-                4: registers[rdId] = rs1 ^ rs2;
-                6: registers[rdId] = rs1 | rs2;
-                7: registers[rdId] = rs1 & rs2;
-                1: registers[rdId] = rs1 << rs2;
-                5: registers[rdId] = funct7[5] ? (rs1 >> rs2) & ({32{rs1[31]}} << rs2) : rs1 >> rs2;
-                2: registers[rdId] = $signed(rs1) < $signed(rs2);
-                3: registers[rdId] = rs1 < rs2;
-            endcase
+          state <= WAIT_INSTR;
         end
+        WAIT_INSTR:
+        begin
+          instr <= mem_rdata;
+          state <= LOAD_REGS;
+        end
+        LOAD_REGS:
+        begin
+          rs1 <= registers[rs1Id];
+          rs2 <= registers[rs2Id];
 
-        if (!isSYSTEM)
-          PC <= PC + 4;
-        state <= FETCH_INSTR;
-      end
-    endcase
+          if (isLoad)
+          begin
+            state <= WAIT_LOAD_DATA;
+          end
+          else
+          begin
+            state <= EXECUTE;
+          end
+        end
+        WAIT_LOAD_DATA:
+        begin
+          state <= EXECUTE;
+        end
+        EXECUTE:
+        begin
+          if (isALU || isALUImm)
+          begin
+            case (funct3)
+              0:
+                registers[rdId] = funct7[5] ? rs1 - rs2ForALU : rs1 + rs2ForALU;
+              4:
+                registers[rdId] = rs1 ^ rs2ForALU;
+              6:
+                registers[rdId] = rs1 | rs2ForALU;
+              7:
+                registers[rdId] = rs1 & rs2ForALU;
+              1:
+                registers[rdId] = rs1 << rs2ShiftForALU;
+              5:
+                registers[rdId] = funct7[5] ? $signed(rs1 >> rs2ShiftForALU) : rs1 >> rs2ShiftForALU;
+              2:
+                registers[rdId] = ($signed(rs1) < $signed(rs2ForALU)) ? 1'b1 : 1'b0;
+              3:
+                registers[rdId] = (rs1 < rs2ForALU) ? 1'b1: 1'b0;
+            endcase
+
+            state <= FETCH_INSTR;
+            PC <= PC + 4;
+          end
+          else if (isLoad)
+          begin
+            case (funct3)
+              0:
+                registers[rdId] = $signed(mem_rdata[0:7]);
+
+              1:
+                registers[rdId] = $signed(mem_rdata[0:15]);
+
+              2:
+                registers[rdId] = mem_rdata;
+
+              4:
+                registers[rdId] = mem_rdata[0:7];
+
+              5:
+                registers[rdId] = mem_rdata[0:15];
+            endcase
+
+            state <= FETCH_INSTR;
+            PC <= PC + 4;
+          end
+          else
+          begin
+            state <= FETCH_INSTR;
+            PC <= PC + 4;
+          end
+        end
+      endcase
+    end
   end
 
   assign pc_out = PC;
