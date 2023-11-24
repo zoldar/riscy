@@ -20,6 +20,8 @@ endmodule
 module Memory (
     input CLK,
     input [31:0] MEM_ADDR,
+    input [31:0] MEM_WDATA,
+    input [4:0] WRITE,
     output reg [31:0] mem_rdata
   );
 
@@ -46,6 +48,11 @@ module Memory (
 
   always @(posedge CLK)
   begin
+    if (WRITE[0])
+    begin
+      MEM[WRITE:0] <= MEM_WDATA[WRITE:0];
+    end
+
     mem_rdata <= MEM[word_addr];
   end
 endmodule
@@ -107,6 +114,7 @@ module SOC (
   // Memory
   wire [31:0] mem_addr;
   wire [31:0] mem_rdata;
+  reg [4:0] mem_wmask;
 
   // CPU state
   reg [31:0] registers [0:31];
@@ -117,6 +125,7 @@ module SOC (
 
   initial
   begin
+    mem_wmask = 5'b0;
     registers[0] = 0;
   end
 
@@ -125,6 +134,8 @@ module SOC (
          )RAM(
            .CLK(clk),
            .MEM_ADDR(mem_addr),
+           .MEM_WDATA(rs2),
+           .WRITE(mem_wmask),
            .mem_rdata(mem_rdata)
          );
 
@@ -168,12 +179,13 @@ module SOC (
   localparam FETCH_INSTR = 0;
   localparam WAIT_INSTR = 1;
   localparam LOAD_REGS = 2;
-  localparam WAIT_LOAD_DATA = 3;
+  localparam WAIT_DATA = 3;
   localparam EXECUTE = 4;
+  localparam WAIT_WRITE = 5;
 
   reg [2:0] state = FETCH_INSTR;
 
-  assign mem_addr = (state == WAIT_LOAD_DATA) ? (rs1 + Iimm) : PC;
+  assign mem_addr = (state == WAIT_DATA) ? (rs1 + Simm) : PC;
 
   always @(posedge clk or negedge resetn)
   begin
@@ -201,14 +213,14 @@ module SOC (
 
           if (isLoad)
           begin
-            state <= WAIT_LOAD_DATA;
+            state <= WAIT_DATA;
           end
           else
           begin
             state <= EXECUTE;
           end
         end
-        WAIT_LOAD_DATA:
+        WAIT_DATA:
         begin
           state <= EXECUTE;
         end
@@ -260,11 +272,73 @@ module SOC (
             state <= FETCH_INSTR;
             PC <= PC + 4;
           end
+          else if (isStore)
+          begin
+            case (funct3)
+              0:
+                mem_wmask <= 3'b111;
+              1:
+                mem_wmask <= 4'b1111;
+              2:
+                mem_wmask <= 5'b11111;
+            endcase
+            state <= WAIT_WRITE;
+          end
+          else if (isJAL)
+          begin
+            registers[rdId] <= PC + 4;
+            PC <= PC + Jimm;
+            state <= FETCH_INSTR;
+          end
+          else if (isJALR)
+          begin
+            registers[rdId] = PC + 4;
+            PC = rs1 + Iimm;
+            state <= FETCH_INSTR;
+          end
+          else if (isLUI)
+          begin
+            registers[rdId] <= Uimm << 12;
+            state <= FETCH_INSTR;
+          end
+          else if (isAUIPC)
+          begin
+            registers[rdId] <= PC + (Uimm << 12);
+            state <= FETCH_INSTR;
+          end
+          else if (isBranch)
+          begin
+            case (funct3)
+              0:
+                PC <= (rs1 == rs2) ? PC <= PC + Bimm : PC;
+              1:
+                PC <= (rs1 != rs2) ? PC <= PC + Bimm : PC;
+              4:
+                PC <= ($signed(rs1) < $signed(rs2)) ? PC <= PC + Bimm : PC;
+              5:
+                PC <= ($signed(rs1) >= $signed(rs2)) ? PC <= PC + Bimm : PC;
+              6:
+                PC <= (rs1 < rs2) ? PC <= PC + Bimm : PC;
+              7:
+                PC <= (rs1 >= rs2) ? PC <= PC + Bimm : PC;
+            endcase
+            state <= FETCH_INSTR;
+          end
+          else if (isSYSTEM)
+          begin
+            state <= FETCH_INSTR;
+          end
           else
           begin
             state <= FETCH_INSTR;
             PC <= PC + 4;
           end
+        end
+        WAIT_WRITE:
+        begin
+          mem_wmask <= 5'b0;
+          state <= FETCH_INSTR;
+          PC <= PC + 4;
         end
       endcase
     end
