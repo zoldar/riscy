@@ -1,3 +1,72 @@
+module top (
+    input CLK,
+    input BTN_N,
+    input BTN1,
+    input BTN2,
+    input BTN3,
+    output LED1,
+    output LED2,
+    output LED3,
+    output LED4,
+    output LED5
+  );
+  SOC #(.CLK_DIV(21))SoC(
+        .CLK(CLK),
+        .RESET(BTN_N),
+        .BUTTONS({BTN1, BTN2, BTN3}),
+        .leds({LED1, LED2, LED3, LED4, LED5})
+      );
+endmodule
+
+module SOC (
+    input CLK,
+    input RESET,
+    input [0:2] BUTTONS,
+    output [0:4] leds
+  );
+
+  parameter CLK_DIV = 2;
+
+  // Main internal clock divider (and negative reset source)
+  wire clk;
+  wire resetn;
+
+  Clockworks #(
+               .SLOW(CLK_DIV)
+             )CLOCK(
+               .CLK(CLK),
+               .RESET(RESET),
+               .clk(clk),
+               .resetn(resetn)
+             );
+
+  wire [31:0] mem_addr;
+  wire [31:0] mem_rdata;
+  wire [31:0] mem_wdata;
+  wire [4:0] mem_wmask;
+
+  CPU RISCV32I(
+        .CLK(clk),
+        .RESETN(resetn),
+        .MEM_RDATA(mem_rdata),
+        .mem_addr(mem_addr),
+        .mem_wdata(mem_wdata),
+        .mem_wmask(mem_wmask)
+      );
+
+  Memory #(
+           .MEMORY_SIZE_KB(8)
+         )RAM(
+           .CLK(clk),
+           .ADDR(mem_addr),
+           .WDATA(mem_wdata),
+           .WMASK(mem_wmask),
+           .rdata(mem_rdata)
+         );
+
+  assign leds = mem_rdata[4:0];
+endmodule
+
 module Clockworks (
     input CLK,
     input RESET,
@@ -19,10 +88,10 @@ endmodule
 
 module Memory (
     input CLK,
-    input [31:0] MEM_ADDR,
-    input [31:0] MEM_WDATA,
-    input [4:0] WRITE,
-    output reg [31:0] mem_rdata
+    input [31:0] ADDR,
+    input [31:0] WDATA,
+    input [4:0] WMASK,
+    output reg [31:0] rdata
   );
 
   parameter MEMORY_SIZE_KB = 4;
@@ -30,7 +99,7 @@ module Memory (
   // Memory
   reg [31:0] MEM [0:((MEMORY_SIZE_KB * 1024 / 4) - 1)];
 
-  wire [29:0] word_addr = MEM_ADDR[31:2];
+  wire [29:0] word_addr = ADDR[31:2];
 
   initial
   begin
@@ -48,73 +117,30 @@ module Memory (
 
   always @(posedge CLK)
   begin
-    if (WRITE[0])
+    if (WMASK[0])
     begin
-      MEM[WRITE:0] <= MEM_WDATA[WRITE:0];
+      case (WMASK)
+        5'b00111:
+          MEM[word_addr + 24] <= WDATA[7:0];
+        5'b01111:
+          MEM[word_addr + 16] <= WDATA[15:0];
+        5'b11111:
+          MEM[word_addr] <= WDATA;
+      endcase
     end
 
-    mem_rdata <= MEM[word_addr];
+    rdata <= MEM[word_addr];
   end
 endmodule
 
-module top (
+module CPU (
     input CLK,
-    input BTN1,
-    output LED1,
-    output LED2,
-    output LED3,
-    output LED4,
-    output LED5
+    input RESETN,
+    input [31:0] MEM_RDATA,
+    output [31:0] mem_addr,
+    output [31:0] mem_wdata,
+    output reg [4:0] mem_wmask
   );
-  wire [2:0] state_out;
-  wire [31:0] instr_out;
-  wire [31:0] pc_out;
-  wire clk_out;
-
-  SOC #(.CLK_DIV(21))RiscV(
-        .CLK(CLK),
-        .RESET(BTN1),
-        .state_out(state_out),
-        .instr_out(instr_out),
-        .pc_out(pc_out),
-        .clk_out(clk_out)
-      );
-
-  assign LED1 = state_out[0];
-  assign LED2 = state_out[1];
-  assign LED3 = state_out[2];
-  assign LED4 = pc_out[2];
-  assign LED5 = clk_out;
-endmodule
-
-module SOC (
-    input CLK,
-    input RESET,
-    output [2:0] state_out,
-    output [31:0] instr_out,
-    output [31:0] pc_out,
-    output clk_out
-  );
-
-  parameter CLK_DIV = 2;
-
-  // Main internal clock divider (and negative reset source)
-  wire clk;
-  wire resetn;
-
-  Clockworks #(
-               .SLOW(CLK_DIV)
-             )CLOCK(
-               .CLK(CLK),
-               .RESET(RESET),
-               .clk(clk),
-               .resetn(resetn)
-             );
-
-  // Memory
-  wire [31:0] mem_addr;
-  wire [31:0] mem_rdata;
-  reg [4:0] mem_wmask;
 
   // CPU state
   reg [31:0] registers [0:31];
@@ -129,17 +155,7 @@ module SOC (
     registers[0] = 0;
   end
 
-  Memory #(
-           .MEMORY_SIZE_KB(8)
-         )RAM(
-           .CLK(clk),
-           .MEM_ADDR(mem_addr),
-           .MEM_WDATA(rs2),
-           .WRITE(mem_wmask),
-           .mem_rdata(mem_rdata)
-         );
-
-  // Decoder
+  /*** Decoder ***/
 
   // Opcodes
   wire [5:0] opcode = instr[6:2];
@@ -172,9 +188,9 @@ module SOC (
   wire [31:0] Jimm = {{12{instr[31]}}, instr[19:12], instr[20], instr[30:25], instr[24:21], 1'b0};
 
   wire [31:0] rs2ForALU = isALU ? rs2 : Iimm;
-  wire [31:0] rs2ShiftForALU = isALU ? rs2 : Iimm[0:4];
+  wire [31:0] rs2ShiftForALU = isALU ? rs2 : Iimm[4:0];
 
-  // Main state machine
+  /*** Main state machine ***/
 
   localparam FETCH_INSTR = 0;
   localparam WAIT_INSTR = 1;
@@ -186,10 +202,11 @@ module SOC (
   reg [2:0] state = FETCH_INSTR;
 
   assign mem_addr = (state == WAIT_DATA) ? (rs1 + Simm) : PC;
+  assign mem_wdata = rs2;
 
-  always @(posedge clk or negedge resetn)
+  always @(posedge CLK or negedge RESETN)
   begin
-    if (!resetn)
+    if (!RESETN)
     begin
       PC <= 0;
       state <= FETCH_INSTR;
@@ -203,7 +220,7 @@ module SOC (
         end
         WAIT_INSTR:
         begin
-          instr <= mem_rdata;
+          instr <= MEM_RDATA;
           state <= LOAD_REGS;
         end
         LOAD_REGS:
@@ -254,19 +271,19 @@ module SOC (
           begin
             case (funct3)
               0:
-                registers[rdId] = $signed(mem_rdata[0:7]);
+                registers[rdId] = $signed(MEM_RDATA[7:0]);
 
               1:
-                registers[rdId] = $signed(mem_rdata[0:15]);
+                registers[rdId] = $signed(MEM_RDATA[15:0]);
 
               2:
-                registers[rdId] = mem_rdata;
+                registers[rdId] = MEM_RDATA;
 
               4:
-                registers[rdId] = mem_rdata[0:7];
+                registers[rdId] = MEM_RDATA[7:0];
 
               5:
-                registers[rdId] = mem_rdata[0:15];
+                registers[rdId] = MEM_RDATA[15:0];
             endcase
 
             state <= FETCH_INSTR;
@@ -343,9 +360,5 @@ module SOC (
       endcase
     end
   end
-
-  assign pc_out = PC;
-  assign state_out = state;
-  assign instr_out = {rdId, 3'b111, rs1Id, rs1[7:0]};
-  assign clk_out = clk;
 endmodule
+
