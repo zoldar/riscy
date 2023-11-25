@@ -12,7 +12,7 @@ module top (
   );
   SOC #(.CLK_DIV(21))SoC(
         .CLK(CLK),
-        .RESET(BTN_N),
+        .RESET(!BTN_N),
         .BUTTONS({BTN1, BTN2, BTN3}),
         .leds({LED1, LED2, LED3, LED4, LED5})
       );
@@ -32,18 +32,17 @@ module SOC (
     leds = 5'b0;
   end
 
-  // Main internal clock divider (and negative reset source)
+  // Main internal clock divider
   wire clk;
-  wire resetn;
 
   Clockworks #(
                .SLOW(CLK_DIV)
              )CLOCK(
                .CLK(CLK),
                .RESET(RESET),
-               .clk(clk),
-               .resetn(resetn)
+               .clk(clk)
              );
+
   wire [31:0] mem_addr;
   wire [31:0] mem_rdata;
   wire [31:0] mem_wdata;
@@ -59,7 +58,7 @@ module SOC (
 
   CPU RISCV32I(
         .CLK(clk),
-        .RESETN(resetn),
+        .RESET(RESET),
         .MEM_RDATA(mem_rdata),
         .mem_addr(mem_addr),
         .mem_wdata(mem_wdata),
@@ -90,8 +89,7 @@ endmodule
 module Clockworks (
     input CLK,
     input RESET,
-    output clk,
-    output resetn
+    output clk
   );
 
   parameter SLOW = 0;
@@ -103,7 +101,6 @@ module Clockworks (
   end
 
   assign clk = slow_CLK[SLOW];
-  assign resetn = !RESET;
 endmodule
 
 module Memory (
@@ -163,7 +160,7 @@ endmodule
 
 module CPU (
     input CLK,
-    input RESETN,
+    input RESET,
     input [31:0] MEM_RDATA,
     output [31:0] mem_addr,
     output [31:0] mem_wdata,
@@ -232,9 +229,9 @@ module CPU (
   assign mem_addr = (state == WAIT_DATA) ? rs1 + Iimm : ((state == WAIT_WRITE) ? rs1 + Simm : PC);
   assign mem_wdata = rs2;
 
-  always @(posedge CLK or negedge RESETN)
+  always @(posedge CLK or posedge RESET)
   begin
-    if (!RESETN)
+    if (RESET)
     begin
       PC <= 0;
       state <= FETCH_INSTR;
