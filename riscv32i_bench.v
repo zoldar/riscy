@@ -16,7 +16,7 @@ module riscv32i_bench();
 
     initial begin
         CLK = 0;
-        for(i = 0; i < 512; i = i + 1) begin
+        for(i = 0; i < 1024; i = i + 1) begin
             #10 
             CLK = ~CLK;
             if (leds != prev_leds) begin

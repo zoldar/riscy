@@ -22,10 +22,15 @@ module SOC (
     input CLK,
     input RESET,
     input [0:2] BUTTONS,
-    output [0:4] leds
+    output reg [0:4] leds
   );
 
   parameter CLK_DIV = 2;
+
+  initial
+  begin
+    leds = 5'b0;
+  end
 
   // Main internal clock divider (and negative reset source)
   wire clk;
@@ -39,11 +44,18 @@ module SOC (
                .clk(clk),
                .resetn(resetn)
              );
-
   wire [31:0] mem_addr;
   wire [31:0] mem_rdata;
   wire [31:0] mem_wdata;
   wire [4:0] mem_wmask;
+
+  localparam io_start_addr = 'h400000;
+
+  wire isIO = mem_addr[22];
+  wire isRAM = !isIO;
+
+  wire [31:0] ram_mem_addr = isRAM ? mem_addr : 32'b0;
+  wire [4:0] ram_mem_wmask = isRAM ? mem_wmask : 32'b0;
 
   CPU RISCV32I(
         .CLK(clk),
@@ -58,13 +70,21 @@ module SOC (
            .MEMORY_SIZE_KB(8)
          )RAM(
            .CLK(clk),
-           .ADDR(mem_addr),
+           .ADDR(ram_mem_addr),
            .WDATA(mem_wdata),
-           .WMASK(mem_wmask),
+           .WMASK(ram_mem_wmask),
            .rdata(mem_rdata)
          );
 
-  assign leds = mem_rdata[4:0];
+  localparam io_leds_addr = 2;
+
+  always @(posedge clk)
+  begin
+    if (isIO & mem_wmask[0] & mem_addr[io_leds_addr])
+    begin
+      leds <= {mem_wdata[4], mem_wdata[3], mem_wdata[2], mem_wdata[1], mem_wdata[0]};
+    end
+  end
 endmodule
 
 module Clockworks (
@@ -103,16 +123,24 @@ module Memory (
 
   initial
   begin
-    // 0:	000000b3          	add	ra,zero,zero
-    MEM[0]  = 'h000000b3;
-    // 4:	00108093          	addi	ra,ra,1
-    MEM[1]  = 'h00108093;
-    // 8:	0000a103          	lw	sp,0(ra)
-    MEM[2]  = 'h0000a103;
-    // c:	0020a023          	sw	sp,0(ra)
-    MEM[3]  = 'h0020a023;
-    // 10:	00100073          	ebreak
-    MEM[4] = 'h00100073;
+    // // 0:	000000b3          	add	ra,zero,zero
+    // MEM[0]  = 'h000000b3;
+    // // 4:	00108093          	addi	ra,ra,1
+    // MEM[1]  = 'h00108093;
+    // // 8:	0000a103          	lw	sp,0(ra)
+    // MEM[2]  = 'h0000a103;
+    // // c:	0020a023          	sw	sp,0(ra)
+    // MEM[3]  = 'h0020a023;
+    // // 10:	00100073          	ebreak
+    // MEM[4] = 'h00100073;
+
+    MEM[0] = 'h3e800093;
+    MEM[1] = 'h7d008113;
+    MEM[2] = 'hc1810193;
+    MEM[3] = 'h00400237;
+    MEM[4] = 'h00100293;
+    MEM[5] = 'h00522223;
+    MEM[6] = 'h00100073;
   end
 
   always @(posedge CLK)
@@ -201,7 +229,7 @@ module CPU (
 
   reg [2:0] state = FETCH_INSTR;
 
-  assign mem_addr = (state == WAIT_DATA) ? (rs1 + Simm) : PC;
+  assign mem_addr = (state == WAIT_DATA) ? rs1 + Iimm : ((state == WAIT_WRITE) ? rs1 + Simm : PC);
   assign mem_wdata = rs2;
 
   always @(posedge CLK or negedge RESETN)
@@ -247,7 +275,9 @@ module CPU (
           begin
             case (funct3)
               0:
+              begin
                 registers[rdId] = funct7[5] ? rs1 - rs2ForALU : rs1 + rs2ForALU;
+              end
               4:
                 registers[rdId] = rs1 ^ rs2ForALU;
               6:
@@ -297,7 +327,9 @@ module CPU (
               1:
                 mem_wmask <= 4'b1111;
               2:
+              begin
                 mem_wmask <= 5'b11111;
+              end
             endcase
             state <= WAIT_WRITE;
           end
@@ -310,18 +342,20 @@ module CPU (
           else if (isJALR)
           begin
             registers[rdId] = PC + 4;
-            PC = rs1 + Iimm;
+            PC <= rs1 + Iimm;
             state <= FETCH_INSTR;
           end
           else if (isLUI)
           begin
-            registers[rdId] <= Uimm << 12;
+            registers[rdId] <= Uimm;
             state <= FETCH_INSTR;
+            PC <= PC + 4;
           end
           else if (isAUIPC)
           begin
-            registers[rdId] <= PC + (Uimm << 12);
+            registers[rdId] <= PC + Uimm;
             state <= FETCH_INSTR;
+            PC <= PC + 4;
           end
           else if (isBranch)
           begin
