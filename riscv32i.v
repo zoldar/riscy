@@ -8,13 +8,23 @@ module top (
     output LED2,
     output LED3,
     output LED4,
-    output LED5
+    output LED5,
+    output P1A1,
+    output P1A2,
+    output P1A3,
+    output P1A4,
+    output P1A7,
+    output P1A8,
+    output P1A9,
+    output P1A10
   );
   SOC #(.CLK_DIV(21))SoC(
         .CLK(CLK),
         .RESET(!BTN_N),
         .BUTTONS({BTN1, BTN2, BTN3}),
-        .leds({LED1, LED2, LED3, LED4, LED5})
+        .leds({LED1, LED2, LED3, LED4, LED5}),
+        .segment_select(P1A10),
+        .segment_display({P1A9, P1A8, P1A7, P1A4, P1A3, P1A2, P1A1})
       );
 endmodule
 
@@ -22,7 +32,9 @@ module SOC (
     input CLK,
     input RESET,
     input [0:2] BUTTONS,
-    output reg [0:4] leds
+    output reg [0:4] leds,
+    output segment_select,
+    output [6:0] segment_display
   );
 
   parameter CLK_DIV = 2;
@@ -42,6 +54,22 @@ module SOC (
                .RESET(RESET),
                .clk(clk)
              );
+
+  // Segment display
+
+  reg [7:0] segment_number;
+
+  initial
+  begin
+    segment_number = 8'b0;
+  end
+
+  SegmentDisplay SEGDISP(
+                   .CLK(clk),
+                   .NUMBER(segment_number),
+                   .digit_sel(segment_select),
+                   .seg_pins_n(segment_display)
+                 );
 
   wire [31:0] mem_addr;
   wire [31:0] mem_rdata;
@@ -76,13 +104,105 @@ module SOC (
          );
 
   localparam io_leds_addr = 2;
+  localparam io_segdisplay_addr = 3;
 
   always @(posedge clk)
   begin
-    if (isIO & mem_wmask[0] & mem_addr[io_leds_addr])
+    if (isIO & mem_wmask[0])
     begin
-      leds <= {mem_wdata[4], mem_wdata[3], mem_wdata[2], mem_wdata[1], mem_wdata[0]};
+      case (mem_addr[3:2])
+        2'b01: // LED - IO_ADDR + 4
+          leds <= {mem_wdata[4], mem_wdata[3], mem_wdata[2], mem_wdata[1], mem_wdata[0]};
+        2'b10: // SEGDISPLAY - IO_ADDR + 8
+          segment_number <= mem_wdata[7:0];
+      endcase
     end
+  end
+endmodule
+
+module SegmentDisplay (
+    input CLK,
+    input [7:0] NUMBER,
+    output reg digit_sel,
+    output reg [6:0] seg_pins_n
+  );
+
+  wire [6:0] tens;
+  wire [6:0] ones;
+
+  initial
+  begin
+    digit_sel = 1'b0;
+  end
+
+  wire [3:0] digit = digit_sel ? NUMBER[3:0] : NUMBER[7:4];
+  wire [6:0] segments = digit_sel? ones : tens;
+
+  SevenSeg SegTens(
+             .CLK(CLK),
+             .DIGIT(digit),
+             .segments(tens)
+           );
+
+  SevenSeg SegOnes(
+             .CLK(CLK),
+             .DIGIT(digit),
+             .segments(ones)
+           );
+
+  always @(posedge CLK)
+  begin
+    seg_pins_n <= ~segments;
+    digit_sel <= !digit_sel;
+  end
+endmodule
+
+module SevenSeg(
+    input CLK,
+    input [3:0] DIGIT,
+    output reg [6:0] segments
+  );
+  initial
+  begin
+    segments = 7'b0111111;
+  end
+
+  always @(posedge CLK)
+  begin
+    case (DIGIT)
+      0:
+        segments <= 7'b0111111;
+      1:
+        segments <= 7'b0000110;
+      2:
+        segments <= 7'b1011011;
+      3:
+        segments <= 7'b1001111;
+      4:
+        segments <= 7'b1100110;
+      5:
+        segments <= 7'b1101101;
+      6:
+        segments <= 7'b1111101;
+      7:
+        segments <= 7'b0000111;
+      8:
+        segments <= 7'b1111111;
+      9:
+        segments <= 7'b1101111;
+      4'hA:
+        segments <= 7'b1110111;
+      4'hB:
+        segments <= 7'b1111100;
+      4'hC:
+        segments <= 7'b0111001;
+      4'hD:
+        segments <= 7'b1011110;
+      4'hE:
+        segments <= 7'b1111001;
+      4'hF:
+        segments <= 7'b1110001;
+    endcase
   end
 endmodule
 
@@ -120,24 +240,22 @@ module Memory (
 
   initial
   begin
-    // // 0:	000000b3          	add	ra,zero,zero
-    // MEM[0]  = 'h000000b3;
-    // // 4:	00108093          	addi	ra,ra,1
-    // MEM[1]  = 'h00108093;
-    // // 8:	0000a103          	lw	sp,0(ra)
-    // MEM[2]  = 'h0000a103;
-    // // c:	0020a023          	sw	sp,0(ra)
-    // MEM[3]  = 'h0020a023;
-    // // 10:	00100073          	ebreak
-    // MEM[4] = 'h00100073;
-
+    //   0:	3e800093          	li	ra,1000
+    //   4:	7d008113          	addi	sp,ra,2000
+    //   8:	c1810193          	addi	gp,sp,-1000
+    //   c:	00400237          	lui	tp,0x400
+    //  10:	0c100293          	li	t0,193
+    //  14:	00522223          	sw	t0,4(tp) # 0x400004
+    //  18:	00522423          	sw	t0,8(tp) # 0x8
+    //  1c:	00100073          	ebreak
     MEM[0] = 'h3e800093;
     MEM[1] = 'h7d008113;
     MEM[2] = 'hc1810193;
     MEM[3] = 'h00400237;
-    MEM[4] = 'h00100293;
+    MEM[4] = 'h0c100293;
     MEM[5] = 'h00522223;
-    MEM[6] = 'h00100073;
+    MEM[6] = 'h00522423;
+    MEM[7] = 'h00100073;
   end
 
   always @(posedge CLK)
