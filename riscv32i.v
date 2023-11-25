@@ -18,7 +18,7 @@ module top (
     output P1A9,
     output P1A10
   );
-  SOC #(.CLK_DIV(21))SoC(
+  SOC #(.CLK_DIV(2))SoC(
         .CLK(CLK),
         .RESET(!BTN_N),
         .BUTTONS({BTN1, BTN2, BTN3}),
@@ -51,12 +51,9 @@ module SOC (
                .SLOW(CLK_DIV)
              )CLOCK(
                .CLK(CLK),
-               .RESET(RESET),
                .clk(clk)
              );
-
   // Segment display
-
   reg [7:0] segment_number;
 
   initial
@@ -81,13 +78,17 @@ module SOC (
   wire isIO = mem_addr[22];
   wire isRAM = !isIO;
 
+  // Input device mapping - BUTTONS - IO_ADDR + 16
+  wire [31:0] io_rdata = mem_addr[4] ? {29'b0, BUTTONS[2], BUTTONS[1], BUTTONS[0]} : 32'b0;
+
   wire [31:0] ram_mem_addr = isRAM ? mem_addr : 32'b0;
   wire [4:0] ram_mem_wmask = isRAM ? mem_wmask : 32'b0;
+  wire [31:0] cpu_mem_rdata = isRAM ? mem_rdata : io_rdata;
 
   CPU RISCV32I(
         .CLK(clk),
         .RESET(RESET),
-        .MEM_RDATA(mem_rdata),
+        .MEM_RDATA(cpu_mem_rdata),
         .mem_addr(mem_addr),
         .mem_wdata(mem_wdata),
         .mem_wmask(mem_wmask)
@@ -103,11 +104,9 @@ module SOC (
            .rdata(mem_rdata)
          );
 
-  localparam io_leds_addr = 2;
-  localparam io_segdisplay_addr = 3;
-
   always @(posedge clk)
   begin
+    // Output device mappings
     if (isIO & mem_wmask[0])
     begin
       case (mem_addr[3:2])
@@ -208,7 +207,6 @@ endmodule
 
 module Clockworks (
     input CLK,
-    input RESET,
     output clk
   );
 
@@ -240,22 +238,18 @@ module Memory (
 
   initial
   begin
-    //   0:	3e800093          	li	ra,1000
-    //   4:	7d008113          	addi	sp,ra,2000
-    //   8:	c1810193          	addi	gp,sp,-1000
-    //   c:	00400237          	lui	tp,0x400
-    //  10:	0c100293          	li	t0,193
-    //  14:	00522223          	sw	t0,4(tp) # 0x400004
-    //  18:	00522423          	sw	t0,8(tp) # 0x8
-    //  1c:	00100073          	ebreak
-    MEM[0] = 'h3e800093;
-    MEM[1] = 'h7d008113;
-    MEM[2] = 'hc1810193;
-    MEM[3] = 'h00400237;
-    MEM[4] = 'h0c100293;
-    MEM[5] = 'h00522223;
-    MEM[6] = 'h00522423;
-    MEM[7] = 'h00100073;
+    //   0:	00400237          	lui	tp,0x400
+    //   4:	01022283          	lw	t0,16(tp) # 0x400010
+    //   8:	0c028093          	addi	ra,t0,192
+    //   c:	00122223          	sw	ra,4(tp) # 0x4
+    //  10:	00122423          	sw	ra,8(tp) # 0x8
+    //  14:	00100073          	ebreak
+    MEM[0] = 'h00400237;
+    MEM[1] = 'h01022283;
+    MEM[2] = 'h0c028093;
+    MEM[3] = 'h00122223;
+    MEM[4] = 'h00122423;
+    MEM[5] = 'h00100073;
   end
 
   always @(posedge CLK)
@@ -344,10 +338,10 @@ module CPU (
 
   reg [2:0] state = FETCH_INSTR;
 
-  assign mem_addr = (state == WAIT_DATA) ? rs1 + Iimm : ((state == WAIT_WRITE) ? rs1 + Simm : PC);
+  assign mem_addr = (state == EXECUTE & isLoad) ? rs1 + Iimm : ((state == WAIT_WRITE) ? rs1 + Simm : PC);
   assign mem_wdata = rs2;
 
-  always @(posedge CLK or posedge RESET)
+  always @(posedge CLK)
   begin
     if (RESET)
     begin

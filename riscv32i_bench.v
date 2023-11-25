@@ -1,7 +1,7 @@
 module riscv32i_bench();
     reg CLK;
     wire RESET = 0;
-    wire [0:2] buttons = 3'b0;
+    wire [0:2] buttons = 3'b110;
     wire [0:4] leds;
     wire [6:0] segment_display;
     wire segment_select;
